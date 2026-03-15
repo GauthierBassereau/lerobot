@@ -176,7 +176,9 @@ class IOSPhone(BasePhone, Teleoperator):
             if bank_a:
                 for ch in range(1, 9):
                     if bank_a.has_float(ch):
-                        raw_inputs[f"a{ch}"] = float(bank_a.get_float(ch))
+                        val = float(bank_a.get_float(ch))
+                        if not np.isnan(val):
+                            raw_inputs[f"a{ch}"] = val
             if bank_b:
                 for ch in range(1, 9):
                     if bank_b.has_int(ch):

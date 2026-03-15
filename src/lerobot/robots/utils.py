@@ -55,7 +55,11 @@ def make_robot_from_config(config: RobotConfig) -> Robot:
     elif config.type == "bi_so_follower":
         from .bi_so_follower import BiSOFollower
 
-        return BiSOFollower(config)
+        return BiSO100Follower(config)
+    elif config.type == "ur5_follower":
+        from .ur5_follower import UR5Follower
+
+        return UR5Follower(config)
     elif config.type == "reachy2":
         from .reachy2 import Reachy2Robot
 

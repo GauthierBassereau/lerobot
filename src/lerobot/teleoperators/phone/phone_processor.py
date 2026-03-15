@@ -42,6 +42,8 @@ class MapPhoneActionToRobotAction(RobotActionProcessorStep):
     # TODO(Steven): Gripper vel could be output of phone_teleop directly
     platform: PhoneOS
     _enabled_prev: bool = field(default=False, init=False, repr=False)
+    _gripper_open: bool = field(default=False, init=False, repr=False)
+    _b2_pressed_prev: bool = field(default=False, init=False, repr=False)
 
     def action(self, action: RobotAction) -> RobotAction:
         """
@@ -69,7 +71,12 @@ class MapPhoneActionToRobotAction(RobotActionProcessorStep):
 
         # Map certain inputs to certain actions
         if self.platform == PhoneOS.IOS:
-            gripper_vel = float(inputs.get("a3", 0.0))
+            b2_pressed = bool(inputs.get("b2", 0))
+            if b2_pressed and not self._b2_pressed_prev:
+                self._gripper_open = not self._gripper_open
+            self._b2_pressed_prev = b2_pressed
+            
+            gripper_vel = 1.0 if self._gripper_open else -1.0
         else:
             a = float(inputs.get("reservedButtonA", 0.0))
             b = float(inputs.get("reservedButtonB", 0.0))
