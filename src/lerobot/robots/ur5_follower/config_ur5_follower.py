@@ -9,7 +9,7 @@ from ..config import RobotConfig
 @dataclass
 class UR5FollowerConfig(RobotConfig):
     # IP address of the UR5 controller (e.g. "192.168.1.100")
-    ip_address: str = "192.168.0.124"
+    ip_address: str = "192.10.0.11"
 
     # RTDE communication frequency in Hz
     rtde_frequency: float = 125.0

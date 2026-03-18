@@ -42,6 +42,7 @@ class EEReferenceAndDeltaFromTCP(RobotActionProcessorStep):
     use_latched_reference: bool = True
 
     reference_ee_pose: np.ndarray | None = field(default=None, init=False, repr=False)
+    reference_phone_rot: Rotation | None = field(default=None, init=False, repr=False)
     _prev_enabled: bool = field(default=False, init=False, repr=False)
     _command_when_disabled: np.ndarray | None = field(default=None, init=False, repr=False)
 
@@ -65,15 +66,18 @@ class EEReferenceAndDeltaFromTCP(RobotActionProcessorStep):
         t_curr[:3, 3] = [tcp_x, tcp_y, tcp_z]
 
         enabled = bool(action.pop("enabled"))
-        tx = float(action.pop("target_x"))
-        ty = float(action.pop("target_y"))
-        tz = float(action.pop("target_z"))
+        tx_input = float(action.pop("target_x"))
+        ty_input = float(action.pop("target_y"))
+        tz_input = float(action.pop("target_z"))
         wx_input = float(action.pop("target_wx"))
         wy_input = float(action.pop("target_wy"))
         wz_input = float(action.pop("target_wz"))
         # Apply the phone axis mapping here (swapping x/z and y/x):
-        wx = wx_input
-        wy = wy_input
+        tx = ty_input
+        ty = -tx_input
+        tz = tz_input
+        wx = -wy_input
+        wy = wx_input
         wz = wz_input
         gripper_vel = float(action.pop("gripper_vel"))
 
@@ -82,9 +86,17 @@ class EEReferenceAndDeltaFromTCP(RobotActionProcessorStep):
         if enabled:
             ref = t_curr
             if self.use_latched_reference:
-                if not self._prev_enabled or self.reference_ee_pose is None:
+                if not self._prev_enabled or self.reference_ee_pose is None or self.reference_phone_rot is None:
                     self.reference_ee_pose = t_curr.copy()
+                    self.reference_phone_rot = Rotation.from_rotvec([wx, wy, wz])
                 ref = self.reference_ee_pose if self.reference_ee_pose is not None else t_curr
+
+                # Compute relative rotation from the latched phone orientation
+                r_rel = (self.reference_phone_rot.inv() * Rotation.from_rotvec([wx, wy, wz])).as_matrix()
+                desired_rot = ref[:3, :3] @ r_rel
+            else:
+                r_abs = Rotation.from_rotvec([wx, wy, wz]).as_matrix()
+                desired_rot = ref[:3, :3] @ r_abs
 
             delta_p = np.array(
                 [
@@ -94,9 +106,8 @@ class EEReferenceAndDeltaFromTCP(RobotActionProcessorStep):
                 ],
                 dtype=float,
             )
-            r_abs = Rotation.from_rotvec([wx, wy, wz]).as_matrix()
             desired = np.eye(4, dtype=float)
-            desired[:3, :3] = ref[:3, :3] @ r_abs
+            desired[:3, :3] = desired_rot
             desired[:3, 3] = ref[:3, 3] + delta_p
 
             self._command_when_disabled = desired.copy()
@@ -122,6 +133,7 @@ class EEReferenceAndDeltaFromTCP(RobotActionProcessorStep):
     def reset(self):
         self._prev_enabled = False
         self.reference_ee_pose = None
+        self.reference_phone_rot = None
         self._command_when_disabled = None
 
     def transform_features(
