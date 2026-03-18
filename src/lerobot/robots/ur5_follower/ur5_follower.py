@@ -153,11 +153,8 @@ class RobotiqGripperSocket:
         return "ack" in line.strip().lower()
 
     def _set_vars(self, var_dict: "OrderedDict[str, int]") -> None:
-        if self.GTO in var_dict:
-            line0 = self._send_and_recv_line("SET GTO 0\n")
-            if not self._is_ack(line0):
-                raise RuntimeError(f"Robotiq SET GTO 0 not acknowledged: {line0!r}")
-            time.sleep(0.02)
+        # We do not toggle GTO to 0 here because it pauses the gripper 
+        # for >20ms every time a command is sent, causing severe latency.
         
         cmd = "SET"
         for variable, value in var_dict.items():
@@ -232,6 +229,7 @@ class AsyncGripperWrapper:
         self._lock = threading.Lock()
         self._cached_pos: float = 0.0
         self._target_cmd: tuple[int, int, int] | None = None  # (pos, speed, force)
+        self._last_cmd: tuple[int, int, int] | None = None
         self._running = False
         self._thread: threading.Thread | None = None
 
@@ -253,8 +251,11 @@ class AsyncGripperWrapper:
                 with self._lock:
                     cmd = self._target_cmd
                     self._target_cmd = None
-                if cmd is not None:
+                
+                # Only send if the command has changed to avoid spamming the gripper socket
+                if cmd is not None and cmd != self._last_cmd:
                     self._gripper.move_and_wait(*cmd)
+                    self._last_cmd = cmd
 
                 # Read position and cache it
                 pos = self._gripper.get_position()

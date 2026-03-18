@@ -57,7 +57,7 @@ phone_to_ur5_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservat
     steps=[
         MapPhoneActionToRobotAction(platform=teleop_config.phone_os),
         EEReferenceAndDeltaFromTCP(
-            end_effector_step_sizes={"x": 0.65, "y": 0.65, "z": 0.65},
+            end_effector_step_sizes={"x": 0.7, "y": 0.7, "z": 0.7},
             use_latched_reference=True,
         ),
         # NOT NEEDED UR5 has its own safety bounds
