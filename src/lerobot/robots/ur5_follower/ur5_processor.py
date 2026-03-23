@@ -43,6 +43,7 @@ class EEReferenceAndDeltaFromTCP(RobotActionProcessorStep):
 
     reference_ee_pose: np.ndarray | None = field(default=None, init=False, repr=False)
     reference_phone_rot: Rotation | None = field(default=None, init=False, repr=False)
+    reference_phone_pos: np.ndarray | None = field(default=None, init=False, repr=False)
     _prev_enabled: bool = field(default=False, init=False, repr=False)
     _command_when_disabled: np.ndarray | None = field(default=None, init=False, repr=False)
 
@@ -73,12 +74,19 @@ class EEReferenceAndDeltaFromTCP(RobotActionProcessorStep):
         wy_input = float(action.pop("target_wy"))
         wz_input = float(action.pop("target_wz"))
         # Apply the phone axis mapping here (swapping x/z and y/x):
-        tx = ty_input
-        ty = -tx_input
+        # tx = tx_input
+        # ty = ty_input
+        # tz = tz_input
+        # wx = -wy_input
+        # wy = wx_input
+        # wz = wz_input
+        tx = tx_input
+        ty = ty_input
         tz = tz_input
-        wx = -wy_input
-        wy = wx_input
+        wx = wx_input
+        wy = wy_input
         wz = wz_input
+
         gripper_vel = float(action.pop("gripper_vel"))
 
         desired = None
@@ -89,6 +97,7 @@ class EEReferenceAndDeltaFromTCP(RobotActionProcessorStep):
                 if not self._prev_enabled or self.reference_ee_pose is None or self.reference_phone_rot is None:
                     self.reference_ee_pose = t_curr.copy()
                     self.reference_phone_rot = Rotation.from_rotvec([wx, wy, wz])
+                    self.reference_phone_pos = np.array([tx, ty, tz], dtype=float)
                 ref = self.reference_ee_pose if self.reference_ee_pose is not None else t_curr
 
                 # Compute relative rotation from the latched phone orientation
@@ -98,11 +107,16 @@ class EEReferenceAndDeltaFromTCP(RobotActionProcessorStep):
                 r_abs = Rotation.from_rotvec([wx, wy, wz]).as_matrix()
                 desired_rot = ref[:3, :3] @ r_abs
 
+            # Compute relative translation from the latched phone position
+            rel_tx = tx - (self.reference_phone_pos[0] if self.reference_phone_pos is not None else 0.0)
+            rel_ty = ty - (self.reference_phone_pos[1] if self.reference_phone_pos is not None else 0.0)
+            rel_tz = tz - (self.reference_phone_pos[2] if self.reference_phone_pos is not None else 0.0)
+
             delta_p = np.array(
                 [
-                    tx * self.end_effector_step_sizes["x"],
-                    ty * self.end_effector_step_sizes["y"],
-                    tz * self.end_effector_step_sizes["z"],
+                    rel_tx * self.end_effector_step_sizes["x"],
+                    rel_ty * self.end_effector_step_sizes["y"],
+                    rel_tz * self.end_effector_step_sizes["z"],
                 ],
                 dtype=float,
             )
@@ -134,6 +148,7 @@ class EEReferenceAndDeltaFromTCP(RobotActionProcessorStep):
         self._prev_enabled = False
         self.reference_ee_pose = None
         self.reference_phone_rot = None
+        self.reference_phone_pos = None
         self._command_when_disabled = None
 
     def transform_features(

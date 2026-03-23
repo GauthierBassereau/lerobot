@@ -408,6 +408,41 @@ class UR5Follower(Robot):
         # No additional configuration needed — RTDE handles everything
         pass
 
+    def move_to_initial_pose(self) -> None:
+        """Move the robot to the configured initial joint positions using moveJ.
+
+        Converts the configured joint positions from degrees to radians and
+        performs a blocking joint-space move. Does nothing if
+        `initial_joint_positions` is not set in the config.
+        """
+        if self.config.initial_joint_positions is None:
+            logger.info("No initial_joint_positions configured — skipping homing.")
+            return
+
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+
+        if len(self.config.initial_joint_positions) != 6:
+            raise ValueError(
+                f"initial_joint_positions must have 6 values, got {len(self.config.initial_joint_positions)}"
+            )
+
+        target_rad = [np.radians(deg) for deg in self.config.initial_joint_positions]
+        logger.info(f"Moving to initial joint positions (deg): {self.config.initial_joint_positions}")
+
+        # Ensure servo script is stopped before attempting moveJ
+        try:
+            self._rtde_control.servoStop()
+        except Exception as e:
+            logger.debug(f"servoStop ignored during home: {e}")
+
+        self._rtde_control.moveJ(
+            target_rad,
+            self.config.initial_move_speed,
+            self.config.initial_move_acceleration,
+        )
+        logger.info("Reached initial joint positions.")
+
     def get_observation(self) -> dict[str, Any]:
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")

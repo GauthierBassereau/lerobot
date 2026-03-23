@@ -39,8 +39,10 @@ class BasePhone:
     _calib_pos: np.ndarray | None = None
     _calib_rot_inv: Rotation | None = None
 
-    def _reapply_position_calibration(self, pos: np.ndarray) -> None:
+    def _reapply_position_calibration(self, pos: np.ndarray, rot: Rotation | None = None) -> None:
         self._calib_pos = pos.copy()
+        if rot is not None:
+            self._calib_rot_inv = rot.inv()
 
     @property
     def is_calibrated(self) -> bool:
@@ -150,10 +152,14 @@ class IOSPhone(BasePhone, Teleoperator):
             - The raw HEBI feedback object for accessing other data like button presses.
         """
         fbk = self._group.get_next_feedback()
+        if fbk is None:
+            logger.warning("No feedback received from HEBI group.")
+            return False, None, None, None
         pose = fbk[0]
         ar_pos = getattr(pose, "ar_position", None)
         ar_quat = getattr(pose, "ar_orientation", None)
         if ar_pos is None or ar_quat is None:
+            logger.warning("No pose received from HEBI group.")
             return False, None, None, None
         # HEBI provides orientation in w, x, y, z format.
         # Scipy's Rotation expects x, y, z, w.
@@ -190,7 +196,7 @@ class IOSPhone(BasePhone, Teleoperator):
 
         # Rising edge then re-capture calibration immediately from current raw pose
         if enable and not self._enabled:
-            self._reapply_position_calibration(raw_position)
+            self._reapply_position_calibration(raw_position, raw_rotation)
 
         # Apply calibration
         pos_cal = self._calib_rot_inv.apply(raw_position - self._calib_pos)
@@ -333,7 +339,7 @@ class AndroidPhone(BasePhone, Teleoperator):
 
         # Rising edge then re-capture calibration immediately from current raw pose
         if enable and not self._enabled:
-            self._reapply_position_calibration(raw_pos)
+            self._reapply_position_calibration(raw_pos, raw_rot)
 
         # Apply calibration
         pos_cal = self._calib_rot_inv.apply(raw_pos - self._calib_pos)
