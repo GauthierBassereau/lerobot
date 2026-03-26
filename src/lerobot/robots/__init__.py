@@ -16,4 +16,7 @@
 
 from .config import RobotConfig
 from .robot import Robot
+from .ur5_follower import UR5Follower, UR5FollowerConfig
 from .utils import make_robot_from_config
+
+__all__ = ["Robot", "RobotConfig", "UR5Follower", "UR5FollowerConfig", "make_robot_from_config"]

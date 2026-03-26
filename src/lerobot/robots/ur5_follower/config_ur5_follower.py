@@ -25,10 +25,11 @@ class UR5FollowerConfig(RobotConfig):
     gripper_speed: int = 255  # 0-255
     gripper_force: int = 50  # 0-255
 
-    # Initial joint positions (in degrees) for homing at episode start.
+    # Initial joint positions (in degrees) for optional homing.
     # Order: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
-    # Set to None to skip homing.
-    initial_joint_positions: list[float] | None = field(default_factory=lambda: [-71, -100, -90, -77, 90, 0])
+    # Defaults to None so teleoperation does not move the robot unless the user
+    # explicitly configures a known-safe home pose for their cell.
+    initial_joint_positions: list[float] | None = None
 
     # moveJ parameters for homing
     initial_move_speed: float = 0.5  # joint speed [rad/s]

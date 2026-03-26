@@ -99,6 +99,7 @@ class RobotiqGripperSocket:
         try:
             self.socket.settimeout(recv_timeout)
             t0 = time.time()
+            overall_start = time.time()
             grace_period = 0.1  # 100ms grace period for newline after receiving data
             
             while True:
@@ -132,8 +133,13 @@ class RobotiqGripperSocket:
                         if "ack" in buf_str:
                             self._rx_buf.clear()
                             return "ack"
-                    # Otherwise, raise timeout - caller can handle it
-                    raise
+                    
+                    # If we exceeded the original timeout, then raise
+                    if original_timeout is not None and (time.time() - overall_start) > original_timeout:
+                        raise 
+                    
+                    # Otherwise, just keep waiting
+                    continue
         finally:
             # Restore original timeout
             try:
@@ -330,9 +336,41 @@ class UR5Follower(Robot):
     @property
     def is_connected(self) -> bool:
         ctrl_ok = self._rtde_control is not None and self._rtde_control.isConnected()
-        recv_ok = self._rtde_receive is not None and self._rtde_receive.isConnected()
         cams_ok = all(cam.is_connected for cam in self.cameras.values())
-        return ctrl_ok and recv_ok and cams_ok
+        return ctrl_ok and cams_ok
+
+    def _connect_receive_interface(self) -> None:
+        from rtde_receive import RTDEReceiveInterface
+
+        if self._rtde_receive is not None:
+            try:
+                self._rtde_receive.disconnect()
+            except Exception:
+                pass
+
+        last_err: Exception | None = None
+        for _ in range(3):
+            try:
+                self._rtde_receive = RTDEReceiveInterface(
+                    self.config.ip_address,
+                    frequency=self.config.rtde_frequency,
+                )
+                time.sleep(0.2)
+                if self._rtde_receive.isConnected():
+                    return
+            except Exception as e:
+                last_err = e
+            time.sleep(0.2)
+
+        raise ConnectionError(
+            f"Failed to connect to UR5 RTDE receive at {self.config.ip_address}: {last_err}"
+        )
+
+    def _ensure_receive_connection(self) -> None:
+        if self._rtde_receive is not None and self._rtde_receive.isConnected():
+            return
+        logger.warning("RTDE receive disconnected. Reconnecting...")
+        self._connect_receive_interface()
 
     def connect(self, calibrate: bool = False) -> None:
         if self._rtde_control is not None:
@@ -340,18 +378,11 @@ class UR5Follower(Robot):
 
         try:
             from rtde_control import RTDEControlInterface
-            from rtde_receive import RTDEReceiveInterface
         except ImportError as e:
             raise ImportError(
                 "ur-rtde is required for UR5Follower. "
                 "Install it with: pip install ur-rtde"
             ) from e
-
-        print(f"DEBUG: Connecting to UR5 at {self.config.ip_address} (frequency: {self.config.rtde_frequency}Hz)...")
-        self._rtde_receive = RTDEReceiveInterface(self.config.ip_address, frequency=self.config.rtde_frequency)
-        print(f"DEBUG: RTDEReceiveInterface initialized.")
-        time.sleep(0.2)
-        print(f"DEBUG: RTDEReceiveInterface initialized. isConnected() = {self._rtde_receive.isConnected()}")
 
         # Connect gripper using socket implementation from user's scripts FIRST
         # This prevents RTDE timeout while gripper initializes
@@ -362,8 +393,9 @@ class UR5Follower(Robot):
             self._async_gripper = AsyncGripperWrapper(self._gripper)
             self._async_gripper.start()
             logger.info("Robotiq Hand-E gripper activated via socket (async I/O)")
-        
-        # Keep retrying connection and give clear Fieldbus warning if it registers are in use
+
+        # Connect control before receive. On this controller the opposite order
+        # causes the receive session to be dropped as soon as control starts.
         last_err: Exception | None = None
         for _ in range(3):
             try:
@@ -386,6 +418,12 @@ class UR5Follower(Robot):
         else:
             raise ConnectionError(f"Failed to connect to UR5 RTDE control at {self.config.ip_address}: {last_err}")
 
+        logger.debug(
+            "Connecting to UR5 receive at %s (frequency: %sHz)",
+            self.config.ip_address,
+            self.config.rtde_frequency,
+        )
+        self._connect_receive_interface()
         logger.info(f"Connected to UR5 via RTDE at {self.config.ip_address}")
 
         # Connect cameras
@@ -441,10 +479,17 @@ class UR5Follower(Robot):
             self.config.initial_move_speed,
             self.config.initial_move_acceleration,
         )
+        self._ensure_receive_connection()
         logger.info("Reached initial joint positions.")
 
     def get_observation(self) -> dict[str, Any]:
-        if not self.is_connected:
+        ctrl_ok = self._rtde_control is not None and self._rtde_control.isConnected()
+        cams_ok = all(cam.is_connected for cam in self.cameras.values())
+        if not ctrl_ok or not cams_ok:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+
+        self._ensure_receive_connection()
+        if self._rtde_receive is None:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
         obs_dict: dict[str, Any] = {}
@@ -470,7 +515,7 @@ class UR5Follower(Robot):
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
-            obs_dict[cam_key] = cam.async_read()
+            obs_dict[cam_key] = cam.read_latest()
             dt_ms = (time.perf_counter() - start) * 1e3
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
@@ -518,24 +563,41 @@ class UR5Follower(Robot):
         return action
 
     def disconnect(self) -> None:
-        if not self.is_connected:
+        has_live_resources = (
+            self._rtde_control is not None
+            or self._rtde_receive is not None
+            or self._async_gripper is not None
+            or self._gripper is not None
+            or any(cam.is_connected for cam in self.cameras.values())
+        )
+        if not has_live_resources:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
         # Stop servo mode
         if self._rtde_control is not None:
-            self._rtde_control.servoStop()
-            self._rtde_control.stopScript()
-            self._rtde_control.disconnect()
-            self._rtde_control = None
+            try:
+                if self._rtde_control.isConnected():
+                    self._rtde_control.servoStop()
+                    self._rtde_control.stopScript()
+            except Exception as e:
+                logger.debug(f"UR5 control shutdown ignored: {e}")
+            try:
+                self._rtde_control.disconnect()
+            finally:
+                self._rtde_control = None
 
         if self._rtde_receive is not None:
-            self._rtde_receive.disconnect()
-            self._rtde_receive = None
+            try:
+                self._rtde_receive.disconnect()
+            finally:
+                self._rtde_receive = None
 
         if self._async_gripper is not None:
             self._async_gripper.stop()
             self._async_gripper = None
-        self._gripper = None
+        if self._gripper is not None:
+            self._gripper.disconnect()
+            self._gripper = None
 
         # Disconnect cameras
         for cam in self.cameras.values():

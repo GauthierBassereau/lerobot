@@ -1,16 +1,9 @@
 """
-Phone → UR5 Teleoperation Example
+Phone -> UR5 teleoperation example.
 
-Teleoperates a UR5 robot arm (with Robotiq Hand-E gripper) using an iPhone
-via the HEBI Mobile I/O app. The UR5 receives Cartesian end-effector commands
-via servoL — no URDF or external IK solver needed.
-
-Pipeline:
-    Phone 6-DoF → MapPhoneAction → EEReferenceAndDeltaFromTCP → EEBoundsAndSafety
-    → GripperVelToJoint → EEToUR5Action → servoL (RTDE)
-
-Prerequisites:
-    pip install "lerobot[phone,ur5]"
+Teleoperates a UR5 robot arm (with optional Robotiq Hand-E gripper) using an
+iPhone via the HEBI Mobile I/O app. The UR5 receives Cartesian end-effector
+commands via servoL, so no URDF or external IK solver is needed.
 
 Usage:
     python teleoperate.py
@@ -24,7 +17,7 @@ from lerobot.processor.converters import (
     robot_action_observation_to_transition,
     transition_to_robot_action,
 )
-from lerobot.robots.so100_follower.robot_kinematic_processor import (
+from lerobot.robots.so_follower.robot_kinematic_processor import (
     EEBoundsAndSafety,
     GripperVelocityToJoint,
 )
@@ -34,94 +27,91 @@ from lerobot.robots.ur5_follower.ur5_processor import EEReferenceAndDeltaFromTCP
 from lerobot.teleoperators.phone.config_phone import PhoneConfig, PhoneOS
 from lerobot.teleoperators.phone.phone_processor import MapPhoneActionToRobotAction
 from lerobot.teleoperators.phone.teleop_phone import Phone
-from lerobot.utils.robot_utils import busy_wait
+from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 FPS = 30
+EE_STEP_SIZES = {"x": 0.6, "y": 0.6, "z": 0.6}
+EE_BOUNDS = {
+    "min": [-0.8, -0.8, -0.2],
+    "max": [0.8, 0.8, 0.8],
+}
+MAX_EE_STEP_M = 0.06
 
-# ======================== Configuration ========================
-# Update the IP address to match your UR5 controller
-# Update the RealSense serial number to match your camera
-camera_config = {"front": OpenCVCameraConfig(index_or_path=1, width=640, height=480, fps=FPS)}
-robot_config = UR5FollowerConfig(
-    id="my_ur5",
-    cameras=camera_config,
-    use_gripper=True,
-)
-teleop_config = PhoneConfig(phone_os=PhoneOS.IOS)
 
-# ======================== Initialization ========================
-robot = UR5Follower(robot_config)
-teleop_device = Phone(teleop_config)
+def main():
+    camera_config = {"front": OpenCVCameraConfig(index_or_path=1, width=640, height=480, fps=FPS)}
+    robot_config = UR5FollowerConfig(
+        id="my_ur5",
+        cameras=camera_config,
+        use_gripper=True,
+        initial_joint_positions=None,
+    )
+    teleop_config = PhoneConfig(phone_os=PhoneOS.IOS)
 
-# Build pipeline: Phone → EE pose → UR5 servoL
-# NOTE: Unlike SO100, no InverseKinematics or URDF needed.
-# EEReferenceAndDeltaFromTCP reads the UR5's TCP pose directly from observations.
-phone_to_ur5_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
-    steps=[
-        MapPhoneActionToRobotAction(platform=teleop_config.phone_os),
-        EEReferenceAndDeltaFromTCP(
-            end_effector_step_sizes={"x": 0.7, "y": 0.7, "z": 0.7},
-            use_latched_reference=True,
-        ),
-        # NOT NEEDED UR5 has its own safety bounds
-        # EEBoundsAndSafety(
-        #     # UR5 workspace bounds in meters — adjust for your setup
-        #     end_effector_bounds={
-        #         "min": [-1.0, -1.0, 0.0],  # Don't go below table
-        #         "max": [1.0, 1.0, 1.5],
-        #     },
-        #     max_ee_step_m=0.1,  # Max 10cm per step
-        # ),
-        GripperVelocityToJoint(speed_factor=100.0),
-        EEToUR5Action(),
-    ],
-    to_transition=robot_action_observation_to_transition,
-    to_output=transition_to_robot_action,
-)
+    robot = UR5Follower(robot_config)
+    teleop_device = Phone(teleop_config)
 
-# ======================== Connect ========================
-teleop_device.connect()
-robot.connect()
-robot.move_to_initial_pose()
+    phone_to_ur5_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
+        steps=[
+            MapPhoneActionToRobotAction(platform=teleop_config.phone_os),
+            EEReferenceAndDeltaFromTCP(
+                end_effector_step_sizes=EE_STEP_SIZES,
+                use_latched_reference=True,
+            ),
+            # EEBoundsAndSafety(
+            #     end_effector_bounds=EE_BOUNDS,
+            #     max_ee_step_m=MAX_EE_STEP_M,
+            # ),
+            GripperVelocityToJoint(speed_factor=100.0),
+            EEToUR5Action(),
+        ],
+        to_transition=robot_action_observation_to_transition,
+        to_output=transition_to_robot_action,
+    )
 
-# Init rerun viewer
-init_rerun(session_name="phone_ur5_teleop")
+    robot_connected = False
+    teleop_connected = False
+    try:
+        teleop_device.connect()
+        teleop_connected = True
+        robot.connect()
+        robot_connected = True
 
-if not robot.is_connected or not teleop_device.is_connected:
-    raise ValueError("Robot or teleop is not connected!")
+        init_rerun(session_name="phone_ur5_teleop")
 
-print("Starting teleop loop. Move your phone to teleoperate the UR5...")
-print("Hold B1 in the HEBI app to enable control.")
-print("Press B2 to toggle the gripper open/close.")
+        _ = robot.get_observation()
+        if not teleop_device.is_connected:
+            raise ValueError("Teleop is not connected!")
 
-# ======================== Main Loop ========================
-try:
-    while True:
-        t0 = time.perf_counter()
+        print("Starting teleop loop. Move your phone to teleoperate the UR5...")
+        print("Hold B1 in the HEBI app to enable control.")
+        print("Press B2 to toggle the gripper open/close.")
 
-        # Get robot observation (includes joints + TCP pose + gripper)
-        robot_obs = robot.get_observation()
+        while True:
+            t0 = time.perf_counter()
 
-        # Get teleop action from phone
-        phone_action = teleop_device.get_action()
-        if not phone_action:
-            busy_wait(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
-            continue
+            robot_obs = robot.get_observation()
 
-        # Phone → EE pose → UR5 action
-        ur5_action = phone_to_ur5_processor((phone_action, robot_obs))
+            phone_action = teleop_device.get_action()
+            if not phone_action:
+                precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
+                continue
 
-        # Send action to UR5 (servoL + gripper)
-        _ = robot.send_action(ur5_action)
+            ur5_action = phone_to_ur5_processor((phone_action, robot_obs))
+            _ = robot.send_action(ur5_action)
 
-        # Visualize
-        log_rerun_data(observation={**robot_obs, **phone_action}, action=ur5_action)
+            log_rerun_data(observation={**robot_obs, **phone_action}, action=ur5_action)
+            precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
+    except KeyboardInterrupt:
+        print("\nCaught KeyboardInterrupt! Stopping gracefully...")
+    finally:
+        if robot_connected:
+            robot.disconnect()
+        if teleop_connected:
+            teleop_device.disconnect()
+        print("Disconnected successfully.")
 
-        busy_wait(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
-except KeyboardInterrupt:
-    print("\nCaught KeyboardInterrupt! Stopping gracefully...")
-finally:
-    robot.disconnect()
-    teleop_device.disconnect()
-    print("Disconnected successfully.")
+
+if __name__ == "__main__":
+    main()

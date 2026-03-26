@@ -31,7 +31,7 @@ import argparse
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
-from lerobot.datasets.utils import combine_feature_dicts
+from lerobot.datasets.feature_utils import combine_feature_dicts
 from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline
 from lerobot.processor.converters import (
     observation_to_transition,
@@ -39,7 +39,7 @@ from lerobot.processor.converters import (
     transition_to_observation,
     transition_to_robot_action,
 )
-from lerobot.robots.so100_follower.robot_kinematic_processor import (
+from lerobot.robots.so_follower.robot_kinematic_processor import (
     EEBoundsAndSafety,
     GripperVelocityToJoint,
 )
@@ -63,7 +63,17 @@ FPS = 30
 EPISODE_TIME_SEC = 600  # Max time per episode — press Right Arrow to end episode early whenever you want
 RESET_TIME_SEC = 30
 TASK = "Interact with objects on the table"
-HF_REPO_ID = "Gaugou/ur5_test"
+HF_REPO_ID = "Gaugou/ur5"
+DISPLAY_DATA = True
+IMAGE_WRITER_PROCESSES = 0
+IMAGE_WRITER_THREADS = 4
+EE_STEP_SIZES = {"x": 0.7, "y": 0.7, "z": 0.7}
+EE_BOUNDS = {
+    "min": [-0.8, -0.8, 0.05],
+    "max": [0.8, 0.8, 0.8],
+}
+MAX_EE_STEP_M = 0.06
+
 
 def main():
     # ======================== CLI Arguments ========================
@@ -81,6 +91,7 @@ def main():
         id="my_ur5",
         cameras=camera_config,
         use_gripper=True,
+        initial_joint_positions=None,
     )
     teleop_config = PhoneConfig(phone_os=PhoneOS.IOS)
 
@@ -96,15 +107,12 @@ def main():
         steps=[
             MapPhoneActionToRobotAction(platform=teleop_config.phone_os),
             EEReferenceAndDeltaFromTCP(
-                end_effector_step_sizes={"x": 0.7, "y": 0.7, "z": 0.7},
+                end_effector_step_sizes=EE_STEP_SIZES,
                 use_latched_reference=True,
             ),
             # EEBoundsAndSafety(
-            #     end_effector_bounds={
-            #         "min": [-1.0, -1.0, 0.0],
-            #         "max": [1.0, 1.0, 1.5],
-            #     },
-            #     max_ee_step_m=0.10,
+            #     end_effector_bounds=EE_BOUNDS,
+            #     max_ee_step_m=MAX_EE_STEP_M,
             # ),
             GripperVelocityToJoint(speed_factor=100.0),
         ],
@@ -150,7 +158,10 @@ def main():
             repo_id=HF_REPO_ID,
             batch_encoding_size=1,
         )
-        dataset.start_image_writer(num_processes=1, num_threads=4)
+        dataset.start_image_writer(
+            num_processes=IMAGE_WRITER_PROCESSES,
+            num_threads=IMAGE_WRITER_THREADS,
+        )
         print(f"\n✅ Resumed dataset '{HF_REPO_ID}' with {dataset.num_episodes} existing episodes.")
     else:
         # Create new dataset from scratch
@@ -160,40 +171,47 @@ def main():
             features=dataset_features,
             robot_type=robot.name,
             use_videos=True,
-            image_writer_processes=1,
-            image_writer_threads=4,
+            image_writer_processes=IMAGE_WRITER_PROCESSES,
+            image_writer_threads=IMAGE_WRITER_THREADS,
         )
         print(f"\n✅ Created new dataset '{HF_REPO_ID}'.")
 
     # ======================== Connect ========================
-    phone.connect()
-    robot.connect()
-
-    listener, events = init_keyboard_listener()
-    init_rerun(session_name="phone_ur5_record")
-
-    if not robot.is_connected or not phone.is_connected:
-        raise ValueError("Robot or teleop is not connected!")
-
-    # ======================== Recording Loop ========================
-    start_episode = dataset.num_episodes  # episodes already in the dataset
-
-    print(f"\n{'='*60}")
-    print(f"  RECORDING SESSION")
-    print(f"  Dataset: {HF_REPO_ID}")
-    print(f"  Existing episodes: {start_episode}")
-    print(f"  Episodes to record: {NUM_EPISODES}")
-    print(f"  FPS: {FPS} | Max episode time: {EPISODE_TIME_SEC}s")
-    print(f"{'='*60}")
-    print(f"\n  Controls:")
-    print(f"    Hold B1 in the HEBI app to enable control")
-    print(f"    Press B2 to toggle the gripper open/close")
-    print(f"    → (Right Arrow) = End episode early")
-    print(f"    ← (Left Arrow)  = Discard & re-record episode")
-    print(f"    Esc              = Stop recording entirely")
-    print(f"{'='*60}\n")
-
+    robot_connected = False
+    phone_connected = False
+    listener = None
     try:
+        phone.connect()
+        phone_connected = True
+        robot.connect()
+        robot_connected = True
+
+        listener, events = init_keyboard_listener()
+        if DISPLAY_DATA:
+            init_rerun(session_name="phone_ur5_record")
+
+        _ = robot.get_observation()
+        if not phone.is_connected:
+            raise ValueError("Teleop is not connected!")
+
+        # ======================== Recording Loop ========================
+        start_episode = dataset.num_episodes  # episodes already in the dataset
+
+        print(f"\n{'='*60}")
+        print(f"  RECORDING SESSION")
+        print(f"  Dataset: {HF_REPO_ID}")
+        print(f"  Existing episodes: {start_episode}")
+        print(f"  Episodes to record: {NUM_EPISODES}")
+        print(f"  FPS: {FPS} | Max episode time: {EPISODE_TIME_SEC}s")
+        print(f"{'='*60}")
+        print(f"\n  Controls:")
+        print(f"    Hold B1 in the HEBI app to enable control")
+        print(f"    Press B2 to toggle the gripper open/close")
+        print(f"    → (Right Arrow) = End episode early")
+        print(f"    ← (Left Arrow)  = Discard & re-record episode")
+        print(f"    Esc              = Stop recording entirely")
+        print(f"{'='*60}\n")
+
         session_episode = 0
         while session_episode < NUM_EPISODES and not events["stop_recording"]:
             total_episode = start_episode + session_episode
@@ -203,8 +221,9 @@ def main():
             phone_to_robot_ee_pose_processor.reset()
 
             # Move to initial pose before each episode
-            log_say("Moving to initial pose")
-            robot.move_to_initial_pose()
+            if robot.config.initial_joint_positions is not None:
+                log_say("Moving to initial pose")
+                robot.move_to_initial_pose()
 
             record_loop(
                 robot=robot,
@@ -214,7 +233,7 @@ def main():
                 dataset=dataset,
                 control_time_s=EPISODE_TIME_SEC,
                 single_task=TASK,
-                display_data=True,
+                display_data=DISPLAY_DATA,
                 teleop_action_processor=phone_to_robot_ee_pose_processor,
                 robot_action_processor=robot_ee_to_ur5_processor,
                 robot_observation_processor=robot_obs_to_ee_processor,
@@ -230,7 +249,7 @@ def main():
                     teleop=phone,
                     control_time_s=RESET_TIME_SEC,
                     single_task=TASK,
-                    display_data=True,
+                    display_data=DISPLAY_DATA,
                     teleop_action_processor=phone_to_robot_ee_pose_processor,
                     robot_action_processor=robot_ee_to_ur5_processor,
                     robot_observation_processor=robot_obs_to_ee_processor,
@@ -250,8 +269,10 @@ def main():
     finally:
         # ======================== Cleanup (always runs) ========================
         log_say("Stop recording")
-        robot.disconnect()
-        phone.disconnect()
+        if robot_connected:
+            robot.disconnect()
+        if phone_connected:
+            phone.disconnect()
         if listener is not None:
             listener.stop()
 
@@ -264,6 +285,7 @@ def main():
             print("✅ Pushed to Hub.")
         else:
             print("💡 To push to Hub later, run: python record.py --resume --push")
+
 
 if __name__ == "__main__":
     main()
