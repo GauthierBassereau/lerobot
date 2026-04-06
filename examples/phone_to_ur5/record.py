@@ -22,6 +22,9 @@ Usage:
     # Resume recording (appends to existing dataset):
     python record.py --resume
 
+    # Record evaluation episodes into a separate dataset:
+    python record.py --split eval
+
     # Push to HuggingFace Hub after recording:
     python record.py --resume --push
 """
@@ -61,12 +64,23 @@ from lerobot.utils.visualization_utils import init_rerun
 NUM_EPISODES = 50
 FPS = 30
 EPISODE_TIME_SEC = 600  # Max time per episode — press Right Arrow to end episode early whenever you want
-RESET_TIME_SEC = 30
+RESET_TIME_SEC = 20
 TASK = "Interact with objects on the table"
-HF_REPO_ID = "Gaugou/ur5"
-DISPLAY_DATA = True
+BASE_HF_REPO_ID = "Gaugou/ur5"
+# Keep visualization off by default while recording. It is useful for debugging,
+# but it adds CPU work to the control loop and can increase jitter.
+DISPLAY_DATA = False
+# Start with threads only for a single camera. Extra processes add pickling/copy
+# overhead for image payloads and usually hurt latency-sensitive recording loops.
 IMAGE_WRITER_PROCESSES = 0
-IMAGE_WRITER_THREADS = 4
+IMAGE_WRITER_THREADS = 2
+# Additional recording/encoding knobs that affect performance independently from
+# the PNG image writer settings above.
+VIDEO_ENCODING_BATCH_SIZE = 1
+VIDEO_CODEC = "auto"
+STREAMING_ENCODING = False
+ENCODER_QUEUE_MAXSIZE = 30
+ENCODER_THREADS = 1
 EE_STEP_SIZES = {"x": 0.7, "y": 0.7, "z": 0.7}
 EE_BOUNDS = {
     "min": [-0.8, -0.8, 0.05],
@@ -75,12 +89,25 @@ EE_BOUNDS = {
 MAX_EE_STEP_M = 0.06
 
 
+def get_repo_id(base_repo_id: str, split: str) -> str:
+    if split == "train":
+        return base_repo_id
+    return f"{base_repo_id}_{split}"
+
+
 def main():
     # ======================== CLI Arguments ========================
     parser = argparse.ArgumentParser(description="Phone → UR5 Dataset Recording")
     parser.add_argument("--resume", action="store_true", help="Resume recording on an existing dataset")
     parser.add_argument("--push", action="store_true", help="Push dataset to HuggingFace Hub after recording")
+    parser.add_argument(
+        "--split",
+        choices=("train", "eval"),
+        default="train",
+        help="Dataset split to record. 'eval' is stored in a separate dataset repo.",
+    )
     args = parser.parse_args()
+    repo_id = get_repo_id(BASE_HF_REPO_ID, args.split)
 
     # ======================== Configuration ========================
     # Update the IP address to match your UR5 controller
@@ -155,26 +182,35 @@ def main():
     if args.resume:
         # Resume: load existing dataset and continue recording
         dataset = LeRobotDataset(
-            repo_id=HF_REPO_ID,
-            batch_encoding_size=1,
+            repo_id=repo_id,
+            batch_encoding_size=VIDEO_ENCODING_BATCH_SIZE,
+            vcodec=VIDEO_CODEC,
+            streaming_encoding=STREAMING_ENCODING,
+            encoder_queue_maxsize=ENCODER_QUEUE_MAXSIZE,
+            encoder_threads=ENCODER_THREADS,
         )
         dataset.start_image_writer(
             num_processes=IMAGE_WRITER_PROCESSES,
             num_threads=IMAGE_WRITER_THREADS,
         )
-        print(f"\n✅ Resumed dataset '{HF_REPO_ID}' with {dataset.num_episodes} existing episodes.")
+        print(f"\n✅ Resumed dataset '{repo_id}' ({args.split} split) with {dataset.num_episodes} existing episodes.")
     else:
         # Create new dataset from scratch
         dataset = LeRobotDataset.create(
-            repo_id=HF_REPO_ID,
+            repo_id=repo_id,
             fps=FPS,
             features=dataset_features,
             robot_type=robot.name,
             use_videos=True,
             image_writer_processes=IMAGE_WRITER_PROCESSES,
             image_writer_threads=IMAGE_WRITER_THREADS,
+            batch_encoding_size=VIDEO_ENCODING_BATCH_SIZE,
+            vcodec=VIDEO_CODEC,
+            streaming_encoding=STREAMING_ENCODING,
+            encoder_queue_maxsize=ENCODER_QUEUE_MAXSIZE,
+            encoder_threads=ENCODER_THREADS,
         )
-        print(f"\n✅ Created new dataset '{HF_REPO_ID}'.")
+        print(f"\n✅ Created new dataset '{repo_id}' for the {args.split} split.")
 
     # ======================== Connect ========================
     robot_connected = False
@@ -199,7 +235,8 @@ def main():
 
         print(f"\n{'='*60}")
         print(f"  RECORDING SESSION")
-        print(f"  Dataset: {HF_REPO_ID}")
+        print(f"  Dataset: {repo_id}")
+        print(f"  Split: {args.split}")
         print(f"  Existing episodes: {start_episode}")
         print(f"  Episodes to record: {NUM_EPISODES}")
         print(f"  FPS: {FPS} | Max episode time: {EPISODE_TIME_SEC}s")
@@ -284,7 +321,8 @@ def main():
             dataset.push_to_hub()
             print("✅ Pushed to Hub.")
         else:
-            print("💡 To push to Hub later, run: python record.py --resume --push")
+            split_args = "" if args.split == "train" else f" --split {args.split}"
+            print(f"💡 To push to Hub later, run: python record.py --resume{split_args} --push")
 
 
 if __name__ == "__main__":

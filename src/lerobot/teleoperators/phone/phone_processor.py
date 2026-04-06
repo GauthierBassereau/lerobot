@@ -45,6 +45,19 @@ class MapPhoneActionToRobotAction(RobotActionProcessorStep):
     _gripper_open: bool = field(default=False, init=False, repr=False)
     _b2_pressed_prev: bool = field(default=False, init=False, repr=False)
 
+    @staticmethod
+    def _neutral_action(action: RobotAction) -> RobotAction:
+        """Return an explicit no-op action when phone feedback is unavailable."""
+        action["enabled"] = False
+        action["target_x"] = 0.0
+        action["target_y"] = 0.0
+        action["target_z"] = 0.0
+        action["target_wx"] = 0.0
+        action["target_wy"] = 0.0
+        action["target_wz"] = 0.0
+        action["gripper_vel"] = 0.0
+        return action
+
     def action(self, action: RobotAction) -> RobotAction:
         """
         Processes the phone action dictionary to create a robot action dictionary.
@@ -58,6 +71,19 @@ class MapPhoneActionToRobotAction(RobotActionProcessorStep):
         Raises:
             ValueError: If 'pos' or 'rot' keys are missing from the input action.
         """
+        required_keys = {"phone.enabled", "phone.pos", "phone.rot", "phone.raw_inputs"}
+        present_keys = required_keys & set(action)
+
+        # A transient phone feedback gap surfaces as an empty action. Convert it to an
+        # explicit no-op so recording can continue and the dataset captures "do nothing".
+        if not present_keys:
+            return self._neutral_action(action)
+
+        missing_keys = required_keys - set(action)
+        if missing_keys:
+            missing_keys_str = ", ".join(sorted(missing_keys))
+            raise KeyError(f"Missing required phone action keys: {missing_keys_str}")
+
         # Pop them from the action
         enabled = bool(action.pop("phone.enabled"))
         pos = action.pop("phone.pos")
