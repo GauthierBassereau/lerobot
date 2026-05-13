@@ -66,7 +66,7 @@ FPS = 30
 EPISODE_TIME_SEC = 600  # Max time per episode — press Right Arrow to end episode early whenever you want
 RESET_TIME_SEC = 20
 TASK = "Interact with objects on the table"
-BASE_HF_REPO_ID = "Gaugou/ur5"
+BASE_HF_REPO_ID = "Gaugou/ur5_wild"
 # Keep visualization off by default while recording. It is useful for debugging,
 # but it adds CPU work to the control loop and can increase jitter.
 DISPLAY_DATA = False
